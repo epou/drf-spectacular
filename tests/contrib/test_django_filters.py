@@ -4,6 +4,7 @@ import pytest
 from django import __version__ as DJANGO_VERSION
 from django.db import models
 from django.db.models import F
+from django.test import override_settings
 from django.urls import include, path
 from rest_framework import generics, routers, serializers, viewsets
 from rest_framework.test import APIClient
@@ -102,9 +103,18 @@ class ProductFilter(FilterSet):
     in_categories = BaseInFilter(field_name='category')
     is_free = BooleanFilter(field_name='price', lookup_expr='isnull')
     price_range = RangeFilter(field_name='price')
-    model_multi_cat = ModelMultipleChoiceFilter(field_name='category', queryset=Product.objects.all())
-    model_single_cat = ModelChoiceFilter(field_name='category', queryset=Product.objects.all())
+    model_multi_cat = ModelMultipleChoiceFilter(
+        field_name='category',
+        to_field_name='category',
+        queryset=Product.objects.all()
+    )
+    model_single_cat = ModelChoiceFilter(
+        field_name='category',
+        to_field_name='category',
+        queryset=Product.objects.all()
+    )
     all_values = AllValuesFilter(field_name='price')
+    all_values.model = Product
 
     custom_filter = CustomBooleanFilter(field_name='price', lookup_expr='isnull')
     custom_underspec_filter = CustomBaseInFilter(field_name='category')
@@ -182,8 +192,20 @@ class ProductViewset(viewsets.ReadOnlyModelViewSet):
         )
 
 
+@pytest.mark.django_db
 @pytest.mark.contrib('django_filter')
+@override_settings(
+    FILTERS_EMPTY_CHOICE_LABEL=None,
+    FILTERS_NULL_CHOICE_LABEL=None,
+)
 def test_django_filters(no_warnings):
+    other_sub_product = OtherSubProduct.objects.create(uuid=uuid.uuid4())
+    _ = Product.objects.create(
+        category='A', price=4, in_stock=True, other_sub_product=other_sub_product
+    )
+    _ = Product.objects.create(
+        category='B', price=5, in_stock=True, other_sub_product=other_sub_product
+    )
     assert_schema(
         generate_schema('products', ProductViewset),
         'tests/contrib/test_django_filters.yml'
@@ -252,6 +274,7 @@ def test_django_filters_requests(no_warnings):
 
 
 @pytest.mark.contrib('django_filter')
+@pytest.mark.django_db
 def test_through_model_multi_choice_filter(no_warnings):
     class RelationModel(models.Model):
         test = models.CharField(max_length=50)
@@ -264,7 +287,7 @@ def test_through_model_multi_choice_filter(no_warnings):
         rm = models.ForeignKey(RelationModel, on_delete=models.PROTECT)
 
     class MyFilter(FilterSet):
-        reltd = ModelMultipleChoiceFilter(field_name="reltd", label="reltd")
+        reltd = ModelMultipleChoiceFilter(field_name="reltd", label="reltd", queryset=SimpleModel.objects.all())
 
         class Meta:
             model = TestModel
@@ -422,6 +445,7 @@ def test_filterset_enum_description_duplication(no_warnings):
 
 
 @pytest.mark.contrib('django_filter')
+@pytest.mark.django_db
 def test_filter_on_listapiview(no_warnings):
     class XListView(generics.ListAPIView):
         queryset = Product.objects.all()
@@ -436,3 +460,76 @@ def test_filter_on_listapiview(no_warnings):
 
     schema = generate_schema('/x/', view=XListView)
     assert len(schema['paths']['/x/']['get']['parameters']) > 1
+
+
+@pytest.mark.contrib('django_filter')
+@pytest.mark.parametrize("null_label,expected_enum", [
+    ("NULL LABEL", ["NULL VALUE", "a", "b"]),
+    (None, ["a", "b"]),
+])
+@override_settings(
+    FILTERS_NULL_CHOICE_VALUE="NULL VALUE",
+)
+def test_filterset_enum_includes_allow_null_label_if_not_None(no_warnings, null_label, expected_enum):
+    class SimpleModelFilterSet(FilterSet):
+        class Meta:
+            model = SimpleModel
+            fields = ("category",)
+
+        category = ChoiceFilter(
+            choices=(('a', 'A'), ('b', 'B')),
+            null_label=null_label,
+            empty_label=None,
+        )
+
+    class XViewSet(viewsets.ModelViewSet):
+        queryset = SimpleModel.objects.all()
+        serializer_class = SimpleSerializer
+        filter_backends = [DjangoFilterBackend]
+        filterset_class = SimpleModelFilterSet
+
+    schema = generate_schema('/x', XViewSet)
+    category_type_schema = schema['paths']['/x/']['get']['parameters'][0]
+    assert category_type_schema['name'] == 'category'
+    assert category_type_schema['schema']['enum'] == expected_enum
+
+
+@pytest.mark.contrib('django_filter')
+@pytest.mark.parametrize(
+    "empty_label,null_label",
+    [
+        ("EMPTY LABEL", "NULL LABEL"),   # both set
+        (None, "NULL LABEL"),            # empty label None
+        ("EMPTY LABEL", None),           # null label None
+        (None, None),                    # both None
+    ],
+)
+def test_filterset_enum_respects_overridden_settings(empty_label, null_label, no_warnings):
+    with override_settings(
+        FILTERS_EMPTY_CHOICE_LABEL=empty_label,
+        FILTERS_NULL_CHOICE_LABEL=null_label,
+        FILTERS_NULL_CHOICE_VALUE="NULL VALUE",
+    ):
+        class SimpleModelFilterSet(FilterSet):
+            class Meta:
+                model = SimpleModel
+                fields = ("category",)
+
+            category = ChoiceFilter(
+                choices=(('a', 'A'), ('b', 'B')),
+            )
+
+        class XViewSet(viewsets.ModelViewSet):
+            queryset = SimpleModel.objects.all()
+            serializer_class = SimpleSerializer
+            filter_backends = [DjangoFilterBackend]
+            filterset_class = SimpleModelFilterSet
+
+        schema = generate_schema('/x', XViewSet)
+        category_type_schema = schema['paths']['/x/']['get']['parameters'][0]
+
+        assert category_type_schema['name'] == 'category'
+        assert ("NULL VALUE" in category_type_schema['schema']['enum']) == (null_label is not None)
+        assert "a" in category_type_schema['schema']['enum']
+        assert "b" in category_type_schema['schema']['enum']
+        assert ("" in category_type_schema['schema']['enum']) == (empty_label is not None)

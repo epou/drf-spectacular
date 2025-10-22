@@ -12,10 +12,20 @@ paths:
         schema:
           type: number
           format: double
+          enum:
+          - 4.0
+          - 5.0
+        description: |-
+          Price
+
+          * `4.0` - 4.0
+          * `5.0` - 5.0
       - in: query
         name: cat_callable
         schema:
           type: string
+          enum:
+          - A
         description: some category description
       - in: query
         name: category
@@ -123,6 +133,8 @@ paths:
           type: array
           items:
             type: integer
+            enum:
+            - 1
         explode: true
         style: form
       - in: query
@@ -130,6 +142,7 @@ paths:
         schema:
           type: string
           enum:
+          - ''
           - A
           - B
         description: |-

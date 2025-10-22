@@ -222,13 +222,11 @@ class DjangoFilterExtension(OpenApiFilterExtension):
             return _NoHint
 
     def _get_explicit_filter_choices(self, filter_field):
-        if 'choices' not in filter_field.extra:
+        choices = getattr(filter_field.field, "choices", None)
+        if choices is None:
             return None
-        elif callable(filter_field.extra['choices']):
-            # choices function may utilize the DB, so refrain from actually calling it.
-            return []
-        else:
-            return [c for c, _ in filter_field.extra['choices']]
+
+        return [getattr(choice, "value", choice) for choice, _ in choices] or None
 
     def _get_model_field(self, filter_field, model):
         if not filter_field.field_name:
